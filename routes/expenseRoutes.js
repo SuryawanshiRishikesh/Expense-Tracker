@@ -78,12 +78,22 @@ router.delete('/:id', protect, async (req, res) => {
 });
 
 // @route   GET /api/expenses/summary
-// @desc    Get a summary of expenses grouped by category
+// @desc    Get a summary of expenses grouped by category with optional date filtering
 // @access  Private
 router.get('/summary', protect, async (req, res) => {
   try {
+    const { startDate, endDate } = req.query;
+    const filter = { user: req.user._id };
+
+    if (startDate && endDate) {
+      filter.date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
     const summary = await Expense.aggregate([
-      { $match: { user: req.user._id } },
+      { $match: filter },
       {
         $group: {
           _id: '$category',
@@ -129,6 +139,85 @@ router.get('/monthly', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/expenses/monthly-breakdown
+// @desc    Get a detailed breakdown of expenses by month and category, with optional filtering
+// @access  Private
+router.get('/monthly-breakdown', protect, async (req, res) => {
+  try {
+    const { startDate, endDate, category } = req.query;
+    const filter = { user: req.user._id };
+
+    if (startDate && endDate) {
+      filter.date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    if (category) {
+      filter.category = category;
+    }
+
+    const breakdown = await Expense.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$date' },
+            month: { $month: '$date' },
+            category: '$category'
+          },
+          totalAmount: { $sum: '$amount' },
+        },
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.category': 1 },
+      },
+    ]);
+    res.json(breakdown);
+  } catch (error) {
+    console.error('Error fetching monthly breakdown:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
+// @route   GET /api/expenses/top-categories
+// @desc    Get a summary of top N expenses by category
+// @access  Private
+router.get('/top-categories', protect, async (req, res) => {
+  const { limit = 5, startDate, endDate } = req.query;
+  const filter = { user: req.user._id };
+
+  if (startDate && endDate) {
+    filter.date = {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate),
+    };
+  }
+
+  try {
+    const topCategories = await Expense.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$category',
+          totalAmount: { $sum: '$amount' },
+        },
+      },
+      {
+        $sort: { totalAmount: -1 },
+      },
+      {
+        $limit: parseInt(limit),
+      },
+    ]);
+    res.json(topCategories);
+  } catch (error) {
+    console.error('Error fetching top categories:', error);
+    res.status(500).json({ message: 'Server Error' });
+  }
+});
+
 // @route   GET /api/expenses/total
 // @desc    Get total spending for a user within a date range
 // @access  Private
@@ -148,14 +237,12 @@ router.get('/total', protect, async (req, res) => {
       { $match: filter },
       {
         $group: {
-          _id: null, // Group all documents into a single group
+          _id: null,
           totalAmount: { $sum: '$amount' },
         },
       },
     ]);
 
-    // totalSpending will be an array, e.g., [{ _id: null, totalAmount: 123.45 }]
-    // We want to return just the number, or 0 if no expenses are found.
     const total = totalSpending.length > 0 ? totalSpending[0].totalAmount : 0;
     res.json({ total });
   } catch (error) {
